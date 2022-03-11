@@ -1,0 +1,2 @@
+# Smartbrick rule 
+ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="093a", KERNEL=="ttyACM*",  MODE="0660", GROUP="dialout", SYMLINK="SmartBrick-%n"

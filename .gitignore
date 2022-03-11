@@ -1,0 +1,7 @@
+/docs/_build
+/_build*
+*.log
+.*.log.LCK
+.*.cfg
+/deploy
+/testing
