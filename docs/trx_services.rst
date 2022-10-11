@@ -32,7 +32,7 @@ In the directory "trxServices" you will find :
     ├── trx.cfg             : The SmartBrick configuration file.
     └── trxServices.pl      : The main script.
 
-The 0B0A012345678900 directory represent the device under test. Its MField and 
+The 0B0A012345678900 directory represents the device under test. Its MField and 
 AField are respectively "0B0A" and "012345678900". 
 
 It contains two files : **key.cfg** and **admin.cfg** :
@@ -40,15 +40,15 @@ It contains two files : **key.cfg** and **admin.cfg** :
 - **key.cfg**   : define the ciphering keys (i.e. kenc 1 to kenc 14).
 - **admin.cfg** : define the COMMAND to be send when the trxServices will received a DATA frame.  
 
-The **main.cfg** and **main_fast.cfg** are the mains configutatin files. In these files, 
+The **main.cfg** and **main_fast.cfg** are the main configuration files. In these files, 
 the kmac(s) and network id(s) (NetwId) are defined. Only, *kmac 1* (kmac for NetwId 1)
 and *kmac 9* (kmac for NetwId 9) are presetted. Other Kmac are set to 0.
 
 Note that both **key.cfg** and **main.cfg** (or **main_fast.cfg**) contains a default
 setting with testing purpose.
 
-Furthermore, if your target is the Wize'Up board, the script "setup.sh" may be used to 
-configured the board.
+Furthermore, if your target is the Wize'Up board, the script "setup.sh" can be used to 
+configure the board.
 
 The 0000FFFFFFFFFFFF directory contains empty default keys that can be used as 
 customization base. 
@@ -56,7 +56,7 @@ customization base.
 How to use it
 ===============
 
-Assume that all requirements have previously been done.  
+Let's assume that all requirements have already been done.  
 
 First, enter in the *trxServices* directory :
 
