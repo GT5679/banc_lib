@@ -56,9 +56,13 @@ use Getopt::Long qw(:config bundling);
 use Pod::Usage;
 use Term::ReadLine;
 use Time::HiRes qw(usleep alarm gettimeofday);
+use Time::Local;
+
 use feature qw(say);
 use Data::Dumper;
 use Data::Peek;
+
+use Math::Utils qw(:utility);
 
 use lib "$lib_base_dir/lib"; 
 
@@ -70,6 +74,8 @@ use Telereleve::Application::Download;
 use Telereleve::Application::Iot;
 
 use Telereleve::COM::Trx qw(:error_code);
+
+use Telereleve::Extend::Admin qw(GetPackageDesc genADMIN);
 
 #our $VERSION = '0.0';
 
@@ -170,6 +176,7 @@ use constant {
     APP_RESPONSE => 3,
     APP_IOT      => 4,
     APP_DOWNLOAD => 5,
+    GEN_ADMIN    => 6,
 };
 
 # trxService mode
@@ -187,6 +194,8 @@ my $DwnThreadCtrl = Thread::Queue->new();
 #******************************************************************************
 #******************************************************************************
 # TRX related
+
+my $msg_min_delay = 80;
 
 =head2 TRX_Open
 
@@ -275,363 +284,42 @@ sub TRX_Close
 
 #******************************************************************************
 #******************************************************************************
-# Admin Related
-
-my %trm_type = (
-    'NONE'            => 0,
-    'READPARAMETERS'  => 1,
-    'WRITEPARAMETERS' => 2,
-    'EXECPING'        => 3,
-    'ANNDOWN'         => 4,
-    'KEYCHG'          => 5
-);
-
-my @param_ANNDOWN = (
-    L7CommandId, L7DwnldId, L7Klog, L7SwVersionIni, L7SwVersionTarget, L7MField, 
-    L7DcHwId, L7BlocksCount, L7ChannelId, L7ModulationId, L7DaysProg,
-    L7DaysRepeat, L7DeltaSec, HashSW
-    );
-my @template_ANNDOWN = ("H2", "H6", "H32", "H4", "H4", "H4", "H4", "n", "c", "c", "L>", "c", "c", "H8");
-
-my @param_KEYCHG = (L7CommandId, L7KeyId, L7KeyVal, L7KIndex);
-#my @template_KEYCHG = ("H2", "H2", "H64", "H2"); 
-my @template_KEYCHG = ("2", "2", "64", "2"); 
-
-#******************************************************************************
-
-=head2 GetPackageDesc
-Parameter: file name of the FW package description.xml 
-    
-This extract informations from the xml input file
-
-Return the pack_desc hash.
-Content is 
-    If success \$pack_desc->{status} = 1;
-    otherwise  \$pack_desc->{status} = 0;    
-=cut
-sub GetPackageDesc
-{    
-    my ($pack_desc_file)=@_;
-    
-    my $pack_desc;
-    $pack_desc->{status} = 0;
-    if ( !($pack_desc_file eq "") ) 
-    {
-        my $temp;
-        
-        if (-e $pack_desc_file and -f $pack_desc_file) 
-        {
-            $logger->debug("$pack_desc_file file found!");
-            
-            my $dom = XML::LibXML->load_xml(location => $pack_desc_file);
-
-            $pack_desc->{fabName} = $dom->findvalue('//fabricant/nomFabricant');
-            
-            $temp = 0;
-            foreach my $c (unpack("C*", $pack_desc->{fabName} )) 
-            {
-                $temp = ($temp << 5) + ($c -64);
-            }    
-            $pack_desc->{fabId} = sprintf("%hx", $temp);
-            $pack_desc->{L7Klog} = $dom->findvalue('//fabricant/motifIntegriteFabricant');
-            $pack_desc->{L7SwVersionTarget} = $dom->findvalue('//versionLogiciel');
-            $pack_desc->{L7BlocksCount} = $dom->findvalue('//nbBlocs');
-            
-            $temp = decode_base64($dom->findvalue('//motifIntegriteLogiciel') );
-            $pack_desc->{HashSW} = sprintf("%x", unpack("N", $temp ) );
-            $pack_desc->{status} = 1;
-        } 
-        else 
-        {
-            $logger->warn("File " . $pack_desc_file . " not found");
-        }
-    }
-    return $pack_desc;
-}
-
-=head2 genADMIN
-Parameter: $infoIn hash  
-    - $infoIn->{app}    : instance of Telereleve::Application::Command;
-    - $infoIn->{config} : config containing input COMMAND to treat
-    - $infoIn->{action} : (optional) action (frame type) to work on;
-    - $infoIn->{desc}   : (optional ANNDOWNLOAD only) file name of the given description.xml 
-This generate information to build L7 and L2 ADMIN frames
-
-Return the tuple ($datas, $complements);
-    
-=cut
-sub genADMIN 
-{
-    my ($infoIn) = @_;
-    
-    my $app    = $infoIn->{app};
-    my $config = $infoIn->{config};
-    my $action = $infoIn->{action};
-    
-    my $complements;
-    my $datas;
-    my $show = "";   
-    
-    $complements->{init} = 1; 
-    if ($action eq '' or $action eq 'NONE') 
-    {
-        if ( $config->{main}->{action}) 
-        {
-            $action = $config->{main}->{action};
-        }
-        else 
-        {
-            return (undef, undef);
-        }
-    }
-    $logger->trace("Action : ". $action );
-    
-    if ( $action eq READPARAMETERS)
-    {
-        # READPARAMETERS
-        $datas->{action} = 'COMMAND_READPARAMETERS';
-        $datas->{parameters} = '';
-        my @pList = ( split /,/, $config->{DDC}->{READ_LIST} );
-        foreach my $p (@pList)
-        {
-            my $param = sprintf( "%.02x", hex($p)  );
-            $logger->trace("Add parameter : ". $param );
-            $datas->{parameters} .= $param;
-            #$logger->trace($param);
-        }
-        if ( length $datas->{parameters} == 0 )
-        {
-            $logger->error("No parameters Ids for $datas->{action}");
-            return (undef, undef);
-        }
-    }
-    elsif ( $action eq WRITEPARAMETERS )
-    {
-        # WRITEPARAMETERS
-        $datas->{action} = 'COMMAND_WRITEPARAMETERS';
-        $datas->{parameters} = '';
-        #my @pList = ( split /\{.*\},/, $config->{DDC}->{WRITE_LIST} );
-        my @pList = ( split /\s*;\s*/, $config->{DDC}->{WRITE_LIST} );
-        
-        foreach my $p (@pList)
-        {
-            my @param = ( split /\s*,\s*/, $p);
-            $logger->trace($p);
-            my $id = sprintf( "%.02x", hex($param[0])  );
-            my $sz = sprintf( "%.02x", hex($param[1])  );
-            my $v  = sprintf( "%.02x", hex($param[2])  );
-            $logger->debug("Found parameter => Id : ".$id . " Size  : ".$sz . " Value : ".$v);
-
-            #my $param = sprintf( "%.02x", hex($p)  );
-            my $temp = pack("H2 H".$sz*2, $id, $v);
-            $logger->trace("Add parameter : ". unpack ("H*", $temp) );
-            
-            $datas->{parameters} .= unpack ("H*", $temp);
-        }
-        if ( length $datas->{parameters} == 0 )
-        {
-            $logger->error("No parameters Ids for $datas->{action}");
-            return (undef, undef);
-        }
-    }
-    elsif ( $action eq EXECPING )
-    {
-        # EXECPING
-        $datas->{action} = 'COMMAND_EXECINSTPING';
-        $datas->{parameters} = '';
-    }
-    elsif ( $action eq ANNDOWN )
-    {
-        # ANNDOWN
-        $datas->{action} = 'COMMAND_ANNDOWNLOAD';
-        $datas->{parameters} = '';
-        
-        my @param = @param_ANNDOWN;
-        my @template = @template_ANNDOWN;
-        
-        my $pack_desc;
-        $pack_desc->{status} = 0;
-        if ( !($infoIn->{desc} eq "") )
-        {
-            $pack_desc = GetPackageDesc($infoIn->{desc});
-            if ($pack_desc->{status} == 1)
-            {
-                $logger->trace("From  : " . $infoIn->{desc} );
-                $logger->trace("\tfabName           : " . $pack_desc->{fabName});
-                $logger->trace("\tfabId             : " . $pack_desc->{fabId});
-                $logger->trace("\tL7Klog            : " . $pack_desc->{L7Klog});
-                $logger->trace("\tL7SwVersionTarget : " . $pack_desc->{L7SwVersionTarget});
-                $logger->trace("\tL7BlocksCount     : " . $pack_desc->{L7BlocksCount});
-                $logger->trace("\tHashSW            : " . $pack_desc->{HashSW});
-            }
-        }
-        
-        $config->{DDC}->{L7MField} = $app->{id_fabricant};
-        # If decsription xml is given
-        if ( $pack_desc->{status} == 1) 
-        {
-            if ( !(lc $config->{DDC}->{L7MField} eq lc $pack_desc->{fabId} ) )  
-            {
-                $logger->fatal(
-                    "Fab id doesn't match : "
-                    . $config->{DDC}->{L7MField}
-                    . "!=" . $pack_desc->{fabId} );
-                return (undef, undef);
-            }
-            else 
-            {
-                # Replace with decsription xml one
-                $config->{DDC}->{L7Klog} = $pack_desc->{L7Klog};
-                $config->{DDC}->{L7SwVersionTarget} = $pack_desc->{L7SwVersionTarget};
-                $config->{DDC}->{L7BlocksCount} = $pack_desc->{L7BlocksCount};
-                $config->{DDC}->{HashSW} = $pack_desc->{HashSW};
-            }
-        }
-
-        # Get DaysProg
-        if ($config->{DDC}->{DaysProg})
-        {
-            # Get it
-            # $complements->{DaysProg} = $config->{DDC}->{DaysProg};
-        }
-        else 
-        {
-            $logger->debug("DaysProg not found");
-            # else, start after a delay
-            my $downDelay = 1;
-            if ($app->{simu}->{DownDelay})
-            {   
-                # after DownDelay gtreater than 1s from main.cfg if it exist
-                if ( $app->config()->{simu}->{DownDelay} > 1)
-                {
-                    $downDelay = $app->config()->{simu}->{DownDelay};
-                }
-            }
-            else 
-            {
-                # after 5 second 
-                $downDelay = 5;
-            }
-            
-            my ($sec, $usec) = gettimeofday;
-            
-            my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($sec + $downDelay);
-            
-            $config->{DDC}->{DaysProg} = sprintf("%d-%02d-%02d %02d:%02d:%02d", 1900+$year, $mon+1, $mday, $hour, $min, $sec);
-            $logger->debug("Set DaysProg to $config->{DDC}->{DaysProg} (now + $downDelay second)");
-        }
-        $complements->{DaysProg} = $config->{DDC}->{DaysProg};
-        
-        # Copy mainconfig to complements
-        for ( my $i=1; $i< scalar @param; $i++)
-        {
-            $complements->{$param[$i]} = $config->{DDC}->{$param[$i]};
-        }
-        
-        # Convert in epoch since 2013
-        $complements->{L7DaysProg} = str2time($complements->{DaysProg}) - str2time("2013-01-01 00:00:00");
-        $config->{DDC}->{L7DaysProg} = localtime($complements->{L7DaysProg});
-        
-        
-        # Convert sw init, target and hw version
-        my ($maj, $min);
-
-        $complements->{L7SwVersionIni} .= '0'; 
-        ($maj, $min) = (split /\./, $complements->{L7SwVersionIni})[0,1];
-        $complements->{L7SwVersionIni} = sprintf( "%02X%.02X", sprintf( "%02s", $maj ), sprintf( "%.2s", $min ) );
-        #$complements->{L7SwVersionIni} = sprintf( "%02X%02X", (split /\./, $complements->{L7SwVersionIni})[0,1]  );
-
-        $complements->{L7SwVersionTarget} .= '0'; 
-        ($maj, $min) = (split /\./, $complements->{L7SwVersionTarget})[0,1];
-        $complements->{L7SwVersionTarget} = sprintf( "%02X%.02X", sprintf( "%02s", $maj ), sprintf( "%.2s", $min ) );
-        #$complements->{L7SwVersionTarget} = sprintf( "%02X%02X", (split /\./, $complements->{L7SwVersionTarget})[0,1]  );
-
-        $complements->{L7DcHwId} .= '0'; 
-        ($maj, $min) = (split /\./, $complements->{L7DcHwId})[0,1];
-        $complements->{L7DcHwId} = sprintf( "%02X%.02X", sprintf( "%02s", $maj ), sprintf( "%.2s", $min ) );
-        #$complements->{L7DcHwId} = sprintf( "%02X%-02X", (split /\./, $complements->{L7DcHwId})[0,1]  );
-
-        # Convert Download Id to hex
-        $complements->{L7DwnldId} = sprintf( "%06X", $complements->{L7DwnldId} );
-            
-        
-        $show = $show . "\t"."DaysProg = ". $complements->{DaysProg}."\n";
-        # Setup the complements
-        for ( my $i=1; $i< scalar @param; $i++)
-        {
-            my $str = $config->{DDC}->{$param[$i]};
-            $config->{DDC}->{$param[$i]} = $complements->{$param[$i]};
-            $complements->{$param[$i]} = pack( 
-                    "".$template[$i]."", 
-                    $config->{DDC}->{$param[$i]} 
-                    );
-            
-            $show = $show . "\t" .$param[$i] ." = 0x". unpack ("H*", $complements->{$param[$i]}) . " (".$str .")\n";
-            
-            $complements->{$param[$i]} = unpack ("H*", $complements->{$param[$i]});
-            #$logger->trace( $param[$i] ." = 0x". unpack ("H*", $complements->{$param[$i]}) . " (".$str .")\n" );    
-        }
-    }
-    elsif ( $action eq KEYCHG )
-    {
-        # KEYCHG
-        $datas->{action} = 'COMMAND_WRITEKEY';
-        $datas->{parameters} = '';
-        #$complements->{L7KeyId} = '03';
-        #$complements->{L7KeyVal} = 'ccccccccaaaaaaaaffffffffeeeeeeee';
-    
-        my @param = @param_KEYCHG;
-        my @template = @template_KEYCHG;
-        
-        for ( my $i=1; $i< scalar @param; $i++)
-        {
-            if ($config->{DDC}->{$param[$i]})
-            {
-                if ($param[$i] eq L7KeyVal) 
-                {
-                    $complements->{$param[$i]} = unpack ("H*", pack( "H$template[$i]", $config->{DDC}->{$param[$i]}) );
-                    #$logger->trace( $param[$i] ." = ". unpack ("H*", $complements->{$param[$i]}) ."\n" );
-                    $logger->trace( $param[$i] ." = ". $complements->{$param[$i]} ."\n" );
-                }
-                else 
-                {
-                    $complements->{$param[$i]} = sprintf( "%.02x", hex( $config->{DDC}->{$param[$i]} ) );
-                    $logger->trace( $param[$i] ." = ". $complements->{$param[$i]} ."\n" );
-                }
-            }
-            else 
-            {
-                $logger->trace( $param[$i] ." not found! \n" );
-                return (undef, undef);
-            }
-        }
-        #return (undef, undef);
-    }
-    else
-    {
-        $datas->{action} = 'UNKNOWN ACTION';
-        return (undef, undef);
-    }
-    $logger->trace( "$datas->{action}\n" . $show );
-    return ($datas, $complements);
-}
-
-#******************************************************************************
-#******************************************************************************
 # Service Related
 
 ################################################################################
+# --------------
+my $gCmdUid = 0;
+my %gPendingRsp;
+
+# --------------
 $SIG{ALRM} = sub 
 { 
-    warn "ADM RSP was expected at : ".time;
+    my ($sec, $usec) = gettimeofday;
     # Check if download thread is running
     if ($DwnThread && $DwnThread->is_running) 
     {
         # Stop the thread
         $DwnThreadCtrl->enqueue(0);
     }
-};
 
+    # Check pending response
+    for(keys %gPendingRsp)
+    {
+        #$logger->debug("\nCkPendRspThread :".$_);
+        # check if it's out fo date
+        if ($sec > $gPendingRsp{$_}[2] + 2 )
+        {
+            $logger->warn("\nAt [".$sec ."] "
+                ."No RSP from "
+                .$gPendingRsp{$_}[0]." on CMD "
+                .$gPendingRsp{$_}[1]." until "
+                .$gPendingRsp{$_}[2] );
+            $logger->warn("Remove [".$_."] from pending list.\n");
+            delete ($gPendingRsp{$_});
+        }
+    }
+    alarm (10);
+};
 
 #******************************************************************************
 # Treat Multi ping/pong
@@ -713,6 +401,22 @@ sub doMultiINST {
         $complements->{L7ModemId} = $pong->L7ModemId; 
         $complements->{RSSI} = $rssi;
         
+        # ---
+        my $EPOCH_UNIX_TO_OURS = 1356998400;
+        my ($_sec, $_usec)   = gettimeofday;
+        my $epoch_unix       = $_sec + $_usec / 1000000;
+        
+        $epoch_unix = $epoch_unix + hex($TxDelay);
+        if ($i != 0)
+        {
+            $epoch_unix = $epoch_unix + $msg_min_delay / 1000;
+        }
+        
+        my $epoch_2013 = $epoch_unix - $EPOCH_UNIX_TO_OURS;
+        
+        $pong->epoch( ceil($epoch_2013) );
+        
+        # ---
         $trm7 = $pong->build_message($datas->{action}, $complements);
         $pong->build($trm7);
         $trm2[$i] = $pong->message_hexa();
@@ -731,8 +435,24 @@ Parameter: $hexframe, $rssi
 
 This will treat DATA message and generate, if required, COMMAND frame ready to be send.
 
-Return the tuple ($TxChannel, $TxMod, $TxDelay, @trm2) if success
-    - $complements : A tuple of element only used when COMMAND is ANNDOWNLOAD
+Return the tuple ($complements, $TxChannel, $TxMod, $TxDelay, @trm2) if success
+    - $complements : 
+        - If COMMAND is ANNDOWNLOAD, a tuple of element :
+            - DaysProg (4)
+            - L7DwnldId (3)
+            - L7Klog (16)
+            - L7SwVersionIni (2)
+            - L7SwVersionTarget (2)
+            - L7MField (2)
+            - L7DcHwId (2)
+            - L7BlocksCount (2)
+            - L7ChannelId (1)
+            - L7ModulationId (1)
+            - L7DaysProg (4)
+            - L7DaysRepeat (1) 
+            - L7DeltaSec (1) 
+            - HashSW (4)
+        - undef otherwise
     - $TxChannel   : Channel to TX 
     - $TxMod       : Modulation to TX 
     - $TxDelay     : Waiting delay before sending first frame
@@ -743,64 +463,64 @@ Return the tuple (undef, undef, undef, undef, undef) if failed
 =cut
 sub doADM {
     my ($hexframe, $rssi) = @_;
-    my $ret;
-    my $device;
-    my $target;
-    my $config;
-
-    $logger->info("### DATA <-- #");
-    my $data = $gApp[APP_IOT];
     
+    my $data = $gApp[APP_IOT];
+    my $cmd = $gApp[APP_COMMAND];
+    my $admin = $gApp[GEN_ADMIN];
+    
+    #---------------------------------------------------------------------------
+    # Get DATA
+    $logger->info("### DATA <-- #");   
+
     my $trm6 = $data->decompose($hexframe);
     if ($data->BADCRC() == 1)
     {
         return (undef, undef, undef, undef, undef); 
     }
     
+    #-------------------------------------------
     # Try to find the dedicated key file
-    $device = $data->id_fabricant().$data->id_ddc();
-    $target = uc "./".$device;
-    $logger->trace ("Searching in " .$target ." for available keys");
-    $target = $target."/key.cfg";
-    # Check if command file exist
-    if (-e $target and -f $target) 
+    my $device = $data->id_fabricant().$data->id_ddc();
+    my $config = $admin->GetCfgFromFile($device, "key.cfg");
+    if ( not defined $config)
     {
-        $logger->trace("$target file found!");
-        # Load the key file
-        eval { 
-            $config = Config::Tiny->read($target); 
-        };
-        if ($@) {
-            confess(qq|[Error in $target file]\n $@|);
-            return (undef, undef, undef, undef, undef); 
-        }
-        $data->_load_kenc( $config );
-        # Decrypt L6 frame
-        eval 
-        { 
-            
-            #print ("Data (L6APP = ". $data->App() .") = ". $data->decrypted() ."\n");
-            $data->extract($hexframe);
-            $logger->info("Data (L6APP = ". $data->App() .") = ". $data->decrypted);
-        };
-        if ($@)
-        {
-            # Erreur
-            #print(Dumper($@));
-            $logger->error("data extract error: ".$@ );
-            return (undef, undef, undef, undef, undef);        
-        };
-    }
-    else 
-    {
-        $logger->debug("Device $device is unknown");
-        $logger->trace("None");
         return (undef, undef, undef, undef, undef); 
     }
-
+    
+    #-------------------------------------------
+    # Get the key
+    $data->_load_kenc( $config );
+    
+    #-------------------------------------------
+    # Decrypt L6 frame
+    eval 
+    { 
+        $data->extract($hexframe);
+        $logger->info("Data (L6APP = ". $data->App() .") = ". $data->decrypted);
+    };
+    if ($@)
+    {
+        # Erreur
+        $logger->error("data extract error: ".$@ );
+        return (undef, undef, undef, undef, undef);        
+    };
+    #---------------------------------------------------------------------------
+    # Get available command
     $logger->info("### COMMAND --> #");
-    my $cmd = $gApp[APP_COMMAND];
-
+    
+    my $trm7;
+    my @trm2;
+    
+    #-------------------------------------------
+    # Re-init RF (in case of)
+    my $TxChannel = $cmd->RF_DOWNSTREAM_CHANNEL;
+    my $TxMod = $cmd->RF_DOWNSTREAM_MOD;
+    my $TxDelay = $cmd->EXCH_RX_DELAY;
+    my $TxLength = $cmd->EXCH_RX_LENGTH;
+    my $TxRespDelay = $cmd->EXCH_RESPONSE_DELAY;
+    
+    #-------------------------------------------
+    # Init cmd parameters
     $cmd->_load_kenc( $config );
     $cmd->_update_wize_rev($data->wize_rev());
     
@@ -816,82 +536,35 @@ sub doADM {
     $cmd->id_fabricant( $data->get_liaison_response('M-field') );
     $cmd->id_ddc( $data->get_liaison_response('A-field') );
     
-    ###########################################################
-    # Re-init RF (in case of)
-    my $TxChannel = $cmd->RF_DOWNSTREAM_CHANNEL;
-    my $TxMod = $cmd->RF_DOWNSTREAM_MOD;
-    my $TxDelay = $cmd->EXCH_RX_DELAY;
-    my $TxLength = $cmd->EXCH_RX_LENGTH;
-    my $TxRespDelay = $cmd->EXCH_RESPONSE_DELAY;
+    #-------------------------------------------
+    # Get available command, if any
+    my ($datas, $complements) = $admin->GenADM($cmd);
 
-    ###########################################################
-    # Get available command
-    $device = $cmd->id_fabricant().$cmd->id_ddc();
-    $target = uc "./".$device;
-    my $trm7;
-    my @trm2; 
-    my ($datas, $complements);
-
-    $logger->trace ("Searching in " .$target ." for available commands");
-
-    $target = $target."/admin.cfg";
-    # Check if command file exist
-    if (-e $target and -f $target) 
+    #-------------------------------------------
+    # Check if command available
+    if ( defined $datas && defined $complements)
     {
-        $logger->trace("$target file found!");
+        # Build frame
+        $trm7 = $cmd->build_message($datas->{action}, $datas->{parameters}, $complements);
+        $cmd->build($trm7);
+        $trm2[0] = $cmd->message_hexa();
+               
+        # Set RSP expected time
+        my ($sec, $usec) = gettimeofday;
+        $sec = $sec + hex($TxDelay) + hex($TxRespDelay) + 1.0;
         
-        my $config;
-        eval { 
-            $config = Config::Tiny->read($target); 
-        };
-        if ($@) {
-            confess(qq|[Error in $target file]\n $@|);
-        }
-
-        # Get data required to build the frame
-        my $infoIn;
-        $infoIn->{app} = $cmd;
-        $infoIn->{config} = $config;
+        $gPendingRsp{$gCmdUid} = [ $cmd->id_fabricant().$cmd->id_ddc(), $cmd->cpt, $sec ];
         
-        #$infoIn->{action} = $action;
-        #$infoIn->{desc} = $pack_desc_file;
+        $logger->trace("Set Pending RSP [".$gCmdUid."] : "
+            .$gPendingRsp{$gCmdUid}[0].", "
+            .$gPendingRsp{$gCmdUid}[1].", "
+            .$gPendingRsp{$gCmdUid}[2] );
         
-        if ($config->{DDC}->{desc_file})
-        {
-            my $pack_desc_file;
-            $pack_desc_file = $config->{DDC}->{desc_file};
-            
-            $infoIn->{desc} = "./".$device."/".$pack_desc_file;
-        }
-        
-        ($datas, $complements) = genADMIN($infoIn);
-        if ( defined $datas && defined $complements)
-        {
-            $trm7 = $cmd->build_message($datas->{action}, $datas->{parameters}, $complements);
-            $cmd->build($trm7);
-            $trm2[0] = $cmd->message_hexa();
-            alarm (hex($TxDelay) + hex($TxRespDelay) + 1.0);
-
-            # check if CMMD was correctly build and if was an ANN_DOWNLOAD
-            if ( $datas->{action} && ( $datas->{action} eq 'COMMAND_ANNDOWNLOAD') ) 
-            {
-                # Check if bin file is decmared
-                if ( $config->{DDC}->{bin_file} )
-                {
-                    $complements->{binFile} = "./".$device."/".$config->{DDC}->{bin_file};
-                }
-                else 
-                {
-                    $logger->warn("ANNDOWN request without \"bin_file\"");
-                }
-            }
-        }
-    } 
-    else 
-    {
-        $logger->debug("Device $device is unknown");
-        $logger->trace("None");
+        # Increment Command Uid
+        $gCmdUid = $gCmdUid + 1;
     }
+
+    #---------------------------------------------------------------------------
     return ($complements, $TxChannel, $TxMod, $TxDelay, @trm2);
 }
 
@@ -910,95 +583,115 @@ Return the tuple (undef, undef, undef, undef, undef)
 sub doRSP {
     my ($hexframe, $rssi) = @_;
 
-    $logger->info("### RESPONSE <-- #");
     my $rsp = $gApp[APP_RESPONSE];
-        
+    my $admin = $gApp[GEN_ADMIN];
+    
+    my ($sec, $usec) = gettimeofday;
+    
+    #---------------------------------------------------------------------------
+    #
+    $logger->info("### RESPONSE <-- #");
+    
+    #-------------------------------------------
+    #
     my $trm6 = $rsp->decompose($hexframe);
     if ($rsp->BADCRC() == 1)
     {
         return (undef, undef, undef, undef, undef); 
-    }
+    }    
+    #-------------------------------------------
     # Try to find the dedicated key file
-    my $device;
-    my $target;
-    $device = $rsp->id_fabricant().$rsp->id_ddc();
-    $target = uc "./".$device;
-    $logger->trace ("Searching in " .$target ." for available keys");
-    $target = $target."/key.cfg";
-    # Check if command file exist
-    if (-e $target and -f $target) 
+    my $device = $rsp->id_fabricant().$rsp->id_ddc();
+    my $config = $admin->GetCfgFromFile($device, "key.cfg");
+    if ( not defined $config)
     {
-        $logger->trace("$target file found!");
-        # Load the key file
-        eval { 
-            $config = Config::Tiny->read($target); 
-        };
-        if ($@) {
-            $logger->error(qq|[Error in $target file]\n $@|);
-        }
-        $rsp->_load_kenc( $config );
-        # Decrypt L6 frame
-        eval 
-        { 
-            $logger->trace ("Try to extract...");
-            $rsp->extract($hexframe);
-            
-            my $L7ResponseId = $rsp->get_response('L7ResponseId');
-            my $L7ErrorCode = hex($rsp->get_response('L7ErrorCode'));
-            my $L7SwVersion;
-            my $L7Rssi;
-            my $L7ErrorParam;
-            
-            $logger->info("L7ResponseId: " .$L7ResponseId . " (" . $rsp->get_commande($L7ResponseId) .")");
-            $logger->info("Frame       : " .$rsp->decrypted());
-            if ( hex($L7ErrorCode) == 0 ) 
-            {
-                $L7SwVersion = $rsp->get_response('L7SwVersion');
-                $L7Rssi = $rsp->get_response('L7Rssi');
-                $logger->info("SW version  : " .$L7SwVersion );
-                $logger->info("RSSI           : " .$L7Rssi );
-                $logger->info("Error code  : " .$L7ErrorCode );
-            }
-            else
-            {
-                my $error_response = $rsp->get_error_response($L7ResponseId);
-                $L7ErrorParam = $rsp->get_response('L7ErrorParam');
-                $logger->info("Error code  : " .$L7ErrorCode );
-                $logger->info("Error desc. : " .$error_response->{$L7ErrorCode} );
-                $logger->info("Datas       : [" .$L7ErrorParam."]" );
-            }
-
-            # Check if download thread is running
-            if ($DwnThread && $DwnThread->is_running) 
-            {
-                # Thread exist, that is previous CMD was ANNDOWNLOAD
-                # Check if response with no error
-                if (hex( $L7ErrorCode) == 0 )
-                {
-                    # Start the thread
-                    $DwnThreadCtrl->enqueue(1);
-                    # Then block on it
-                    $DwnThread->join();        
-                }
-                else 
-                {
-                    # Stop the thread
-                    $DwnThreadCtrl->enqueue(0);
-                }
-            }
-        };
-        if ($@)
+        return (undef, undef, undef, undef, undef); 
+    }
+    #-------------------------------------------
+    # Get the key
+    $rsp->_load_kenc( $config );
+    
+    #-------------------------------------------
+    # Extract L7 frame
+    eval 
+    { 
+        $logger->trace ("Try to extract...");
+        $rsp->extract($hexframe);
+        
+        my $L7ResponseId = $rsp->get_response('L7ResponseId');
+        my $L7ErrorCode = hex($rsp->get_response('L7ErrorCode'));
+        my $L7SwVersion;
+        my $L7Rssi;
+        my $L7ErrorParam;
+        
+        $logger->info("L7ResponseId: " .$L7ResponseId . " (" . $rsp->get_commande($L7ResponseId) .")");
+        $logger->info("Frame       : " .$rsp->decrypted());
+        if ( hex($L7ErrorCode) == 0 ) 
         {
-            # Erreur
-            $logger->error("response extract error: ".$@ );
-        };
-    }
-    else 
+            $L7SwVersion = $rsp->get_response('L7SwVersion');
+            $L7Rssi = $rsp->get_response('L7Rssi');
+            $logger->info("SW version  : " .$L7SwVersion );
+            $logger->info("RSSI        : " .$L7Rssi );
+            $logger->info("Error code  : " .$L7ErrorCode );
+        }
+        else
+        {
+            my $error_response = $rsp->get_error_response($L7ResponseId);
+            $L7ErrorParam = $rsp->get_response('L7ErrorParam');
+            $logger->info("Error code  : " .$L7ErrorCode );
+            $logger->info("Error desc. : " .$error_response->{$L7ErrorCode} );
+            $logger->info("Datas       : [" .$L7ErrorParam."]" );
+        }
+
+        for(keys %gPendingRsp)
+        {
+            # check if this device has pending resposne
+            if ($device == $gPendingRsp{$_}[0])
+            {
+                # check if l6cpt match
+                if ($rsp->cpt == $gPendingRsp{$_}[1] )
+                {
+                    # check if it's out fo date
+                    if ($sec > $gPendingRsp{$_}[2] )
+                    {
+                        $logger->warn("RSP is out of date [".$_."] : "
+                            .$gPendingRsp{$_}[0].", "
+                            .$gPendingRsp{$_}[1].", "
+                            .$gPendingRsp{$_}[2] );
+                    }
+                    delete ($gPendingRsp{$_});
+                    last;
+                }
+            }
+        }
+        
+        # Check if download thread is running
+        if ($DwnThread && $DwnThread->is_running) 
+        {
+            # Thread exist, that is previous CMD was ANNDOWNLOAD
+            # Check if response with no error
+            if (hex( $L7ErrorCode) == 0 )
+            {
+                # Start the thread
+                $DwnThreadCtrl->enqueue(1);
+                # Then block on it
+                $DwnThread->join();
+            }
+            else 
+            {
+                # Stop the thread
+                $DwnThreadCtrl->enqueue(0);
+            }
+        }        
+    };
+    if ($@)
     {
-        $logger->debug("Device $device is unknown");
-        $logger->trace("None");
-    }
-    alarm 0;
+        # Erreur
+        $logger->error("data extract error: ".$@ );
+        return (undef, undef, undef, undef, undef);        
+    };    
+    #---------------------------------------------------------------------------
+
     return (undef, undef, undef, undef, undef);    
 }
 
@@ -1025,7 +718,7 @@ Return the tuple (undef, undef, undef, undef)
 sub downThread 
 {
     my ($trx, $complements) = @_;
-    $logger->info("### DOWNLOAD --- #");
+    $logger->info("### DOWNLOAD thread --- #");
     
     my $dwn = $gApp[APP_DOWNLOAD];
     my $L7DaysProg = $complements->{L7DaysProg};
@@ -1038,10 +731,27 @@ sub downThread
     my $binFile = $complements->{binFile};
     my $xml_file;
     
+    $dwn->klog($L7Klog);
+    
+    $dwn->kmac($dwn->get_kmac($dwn->Opr));
+    $dwn->kenc($dwn->klog);
+    $dwn->keysel(18);
+    
     $dwn->download_id($L7DwnldId);
     $dwn->version(0);
-    $dwn->klog($L7Klog);
-   
+    
+    
+    $logger->trace("Download Thread input :".
+        "\n\tL7DaysProg     : ".$L7DaysProg.
+        "\n\tL7DeltaSec     : ".$L7DeltaSec.
+        "\n\tL7DwnldId      : ".$L7DwnldId.
+        "\n\tL7Klog         : ".$L7Klog.
+        "\n\tL7ChannelId    : ".$L7ChannelId.
+        "\n\tL7ModulationId : ".$L7ModulationId.
+        "\n\tL7BlocksCount  : ".$L7BlocksCount.
+        "\n\tbinFile        : ".$binFile
+        );
+
     # Check if bin file exist
     if (-e $binFile and -f $binFile) 
     {
@@ -1091,6 +801,9 @@ sub downThread
         my $prevEpochMs;
         if ( $L7BlocksCount == $binBlockCount )
         {
+        
+            # Wait for start (RSP ok or nok)
+            $logger->debug("Download Thread is waiting RSP");
             $Ctrl = $DwnThreadCtrl->dequeue();
             if( $Ctrl != 1 )
             {
@@ -1098,10 +811,48 @@ sub downThread
                 return ;
             }
 
-            my $curEpoch = gettimeofday;
-            my $dayProg = ($L7DaysProg + 1356998400);
-            my $delay = 0;
-
+            #  -----
+            my $_1M = 1000000;
+            my $EPOCH_UNIX_TO_OURS = 1356998400;
+            my $dayProg = hex($L7DaysProg) + $EPOCH_UNIX_TO_OURS;
+            
+            my ($sec, $usec) = gettimeofday;
+            my $curEpoch = $sec;
+            
+            my $usEpoch = $sec * $_1M + $usec;
+            my $usDayProg = (hex($L7DaysProg) + $EPOCH_UNIX_TO_OURS) * $_1M;
+            my $usdelay = 0;
+            
+            if ($usDayProg < $usEpoch )
+            {
+                $usdelay = ($usEpoch - $usDayProg) % (hex($L7DeltaSec) * $_1M);
+            }
+            else 
+            {
+                $usdelay = ($usDayProg - $usEpoch);
+            }                       
+            
+             
+            $logger->debug("Download session will start soon :".
+                "\n\t- curEpoch         (UTC)  : ".$curEpoch.
+                "\n\t- L7DaysProg (2013 epoch) : ".$L7DaysProg.
+                "\n\t- dayProg    (unix epoch) : ".$dayProg.
+                "\n\t- delay          (second) : ".($usdelay/$_1M)
+                );
+            
+            $logger->debug("Download session Sleep for $usdelay uS");
+            
+            #$logger->debug("Delay is $delay second");
+            
+            # wait DayProg
+            #sleep($delay);
+            
+            usleep($usdelay);
+            
+            #-------------------------------------------------------------------
+            # lock the trx
+            
+            #-------------------------------------------------------------------
             # Configuration of the TRx
             $trx->deactive_state();
             $trx->set_tx_channel(hex($L7ChannelId));
@@ -1109,20 +860,8 @@ sub downThread
             $trx->clear_fifo_rx();
             $trx->clear_fifo_tx();
             $trx->reset_free_running_clock();
-                
-            if ($dayProg < $curEpoch )
-            {
-                $delay = ($curEpoch - $dayProg) % hex($L7DeltaSec);
-            }
-            else 
-            {
-                $delay = ($dayProg - $curEpoch);
-            }
-            $logger->debug("Delay is $delay second");
             
-            # wait DayProg
-            sleep($delay);
-            
+            #-------------------------------------------------------------------
             $logger->debug("Download for ". sprintf( "%d", hex($binBlockCount) ) ." blocks start");
             
             my $block_sz;
@@ -1245,20 +984,28 @@ sub TreatMessage
     my $do_send = 0;    
 
     my $fake, my $lfield, my $cfield, my $frame;
-    my ($sec,$min,$hour);
-    my ($_sec, $usec);
-    my $timestamp;
     my $clock;
     my $l7rssi;
     my $complements;
+       
+    #-----------
+    # Get current time
+    my ($sec,$min,$hour) = localtime(time);
+    my ($_sec, $_usec)   = gettimeofday;
+    my $epoch_unix       = $_sec + $_usec / 1000000;
+    my $times_local      = sprintf("%02d:%02d:%02d:%03d", $hour, $min, $sec, $_usec);
+       
+    #$logger->info($times_local."; ".$sec."; ".$_usec);
+    #$logger->info($epoch_unix."; ".$_sec."; ".$_usec);
     
-    # Show input
-    ($sec,$min,$hour) = localtime(time);
-    ($_sec, $usec) = gettimeofday;
-    $timestamp = sprintf("%02d:%02d:%02d:%03d", $hour, $min, $sec, $usec);
-    $l7rssi = sprintf("%.1f", -0.5*$msg->RSSI);
+    #-----------
+    # Show input   
+    $l7rssi = sprintf("%.1f", (0.5*$msg->RSSI - 147.5) );
+    $l7rssi_raw = sprintf("0x%x", $msg->RSSI);
+    
     ($fake, $frame) = unpack("A2 A*", $msg->message);
-    $logger->info("[$timestamp] [ xxxx ] [$l7rssi dBm] [".$trx->rx_channel()."] [UP] ". $frame);
+    
+    $logger->info("[$times_local] [$epoch_unix] [$l7rssi_raw ($l7rssi dBm)] [".$trx->rx_channel()."] [UP] ". $frame);
     
     #
     my $post_delay = -100;
@@ -1266,10 +1013,11 @@ sub TreatMessage
     {
         $post_delay = $trx->config()->{simu}->{post_waiting_delay};
     }
-    
-    my $curEpoch = gettimeofday;
-    my $prvEpoch = $curEpoch;
-    
+
+    #----------
+    my $curEpochUnix = gettimeofday;
+    my $prvEpochUnix = $curEpochUnix;
+        
     ############################################################################
     
     # Get frame fields
@@ -1295,29 +1043,23 @@ sub TreatMessage
     {    
         ($complements, $TxChannel, $TxMod, $TxDelay, @trm2Tab) = doADM(pack("H*", $hexframe), $l7rssi);
         $TxClock = hex($TxDelay)*1000; 
-        $TxClock -= 56; # required negative delay for device with small EXCH_RX_LENGTH
-
+        $TxClock -= 56; # required negative delay for device with small EXCH_RX_LENGTH        
+               
         if ( defined $complements ) 
         {
             if ( $complements->{binFile} )
             {
+                # If DwnThread is already running, then stop it
                 if ($DwnThread)
                 {
                     if ($DwnThread->is_running) 
                     {
-                        $logger->warn("Can't create already running download thread");        
-                    }
-                    else 
-                    {
-                        $logger->debug("Create Download Thread");
-                        $DwnThread = threads->new( \&downThread, $trx, $complements);
+                        $logger->warn("Terminate the Download Thread");
+                        $DwnThreadCtrl->enqueue(0);
                     }
                 }
-                else 
-                {
-                    $logger->debug("Create Download Thread");
-                    $DwnThread = threads->new( \&downThread, $trx, $complements);
-                }
+                $logger->debug("Create Download Thread");
+                $DwnThread = threads->new( \&downThread, $trx, $complements);
             }
         }
     }
@@ -1325,7 +1067,6 @@ sub TreatMessage
     # ADM RSP 
     elsif($cfield eq '08')
     {
-        alarm(0.0);
         ($complements, $TxChannel, $TxMod, $TxDelay, @trm2Tab) = doRSP(pack("H*", $hexframe), $l7rssi);
     }
     ##################
@@ -1349,10 +1090,12 @@ sub TreatMessage
     
     if ($do_send) 
     {
-        $logger->debug("Prepare to send ".scalar @trm2Tab ." messages" );
+        $logger->debug("Prepare to send ".scalar @trm2Tab ." messages in TRX trgiggered fifo" );
+        
         my ($sec,$min,$hour) = localtime(time);
-        my ($_sec, $usec) = gettimeofday;
-        my $timestamp = sprintf("%02d:%02d:%02d:%03d", $hour, $min, $sec, $usec);
+        my ($_sec, $_usec) = gettimeofday;
+        my $times_local = sprintf("%02d:%02d:%02d:%03d", $hour, $min, $sec, $_usec);
+        
         my $delta;
            
         # Configuration of the TRx
@@ -1372,10 +1115,10 @@ sub TreatMessage
         # Adjust the sending date to take into account the "TreatMessage" delay
         if ( $TxClock > 0 )
         {
-            $curEpoch = gettimeofday;
-            $delta = sprintf("%02f", $curEpoch - $prvEpoch);
-            #print "curEpoch : $curEpoch\n";
-            #print "prvEpoch : $prvEpoch\n";
+            $curEpochUnix = gettimeofday;
+            $delta = sprintf("%02f", $curEpochUnix - $prvEpochUnix);
+            #print "curEpoch : $curEpochUnix\n";
+            #print "prvEpoch : $prvEpochUnix\n";
             #print "delta : $delta\n";
             $TxClock = $TxClock - ($delta*1000);
         }
@@ -1390,15 +1133,12 @@ sub TreatMessage
         if ($do_send > 1) 
         {
             my $i;
-            my $msg_delay = 80;
             
-            $prvEpoch = $curEpoch;
-            if ( $trx->config()->{simu}->{msg_min_delay} )
-            {
-                $msg_delay = $trx->config()->{simu}->{msg_min_delay} 
-            }
-
-            $logger->info("[$timestamp] [".sprintf("%05d", $TxClock)."] [ -xx.x dBm  ] [".hex($TxChannel)."] [DN] ");
+            $prvEpochUnix = $curEpochUnix;
+            
+            $logger->info("[$times_local] [$curEpochUnix] [ -xx.x dBm  ] [".hex($TxChannel)."] [DN] ");
+            $logger->info("    : [trig. delay (ms)] pushed frame");
+            #$logger->info("[$times_local] [".sprintf("%05d", $TxClock)."] [ -xx.x dBm  ] [".hex($TxChannel)."] [DN] ");
             
             for ($i = 0; $i < scalar @trm2Tab; $i++ )
             {
@@ -1414,23 +1154,29 @@ sub TreatMessage
                 
                 # Write the frame into the FIFO 
                 $trx->write_datas($msg_hex, $TxClock);
-                $curEpoch = gettimeofday;
-                $delta = sprintf("%02f", $curEpoch - $prvEpoch);
+                $curEpochUnix = gettimeofday;
+                $delta = sprintf("%02f", $curEpochUnix - $prvEpochUnix);
                 
-                $logger->info("\t[$delta] [".sprintf("%05d", $TxClock)."] ". $trm2Tab[$i]);
+                # $logger->info("    Push [$delta]  trigger : [".sprintf("%05d", $TxClock)."] ". $trm2Tab[$i]);
+                $logger->info("    : [".sprintf("%05d", $TxClock)."] ". $trm2Tab[$i]);
                 
-                $TxClock = $msg_delay;
+                $TxClock = $msg_min_delay;
             }            
         }
         # Case only one message has to be send
         else
         {
+            $curEpochUnix = gettimeofday;
+            
             #usleep($TxClock*1000);
             @$msg_hex = map { hex $_ }  $trm2Tab[0] =~ m/([A-Fa-f0-9]{2})/ig;
             $trx->write_datas($msg_hex, $TxClock);
             #$trx->write_datas($msg_hex, 0);
             $trx->active_state();
-            $logger->info("[$timestamp] [".sprintf("%05d", $TxClock)."] [ -xx.x dBm  ] [".hex($TxChannel)."] [DN] ". $trm2Tab[0]);
+            #$logger->info("[$times_local] [".sprintf("%05d", $TxClock)."] [ -xx.x dBm  ] [".hex($TxChannel)."] [DN] ". $trm2Tab[0]);
+            $logger->info("[$times_local] [$curEpochUnix] [ -xx.x dBm  ] [".hex($TxChannel)."] [DN] [trig. ".sprintf("%05d", $TxClock)."] ".$trm2Tab[0]);
+            #$logger->info("    : [trig. delay (ms)] pushed frame");
+            #$logger->info("    : [".sprintf("%05d", $TxClock)."] ". $trm2Tab[0]);
         }
 
         # Everything is done
@@ -1451,17 +1197,19 @@ sub ServiceMode
     my ($trx) = @_;
     my $i = 0;
     
+    if ( $trx->config()->{simu}->{msg_min_delay} )
+    {
+        $msg_min_delay = $trx->config()->{simu}->{msg_min_delay} 
+    }
+    
     $logger->info("\n### SmartBick is listening ###");
-    $logger->info("[  Time  ] [ clock (ms) ] [ RSSI (dBm) ] [ CH ] [ UP/DN ]");
+    $logger->info("[  Time  ] [ Unix Epoch (ms) ] [ RSSI (dBm) ] [ CH ] [ UP/DN ]");
     
     my @messages; 
     my $msg; 
-
-    #$trx->deactive_state();
-    #if ($trx->trig_out_enable()) 
-    #{
-    #    $trx->set_trigger_mode(0x00, 0x03); #
-    #}
+    
+    # Create the alarm to check the "dead" pending response
+    alarm (5);
     
     while (1)
     {
@@ -1474,20 +1222,11 @@ sub ServiceMode
             } while($trx->tx_fifo_message_count());
             
             $trx->deactive_state();
-            #$trx->active_state();
-            #$trx->clear_fifo_rx();
-            #$trx->clear_fifo_tx();
-            #$trx->reset_free_running_clock();
-            #$trx->set_trigger_mode(0x00, 0x00); #
             $trx->set_trigger_mode(0x00, 0x03); #
-            #$trx->deactive_state();
-            #$trx->active_state();
         }
         
         eval
         {
-            #$trx->active_state();
-            #@messages = $trx->read_response_waiting_message(5,1);
             @messages = $trx->read_response_waiting_message(1);
             $msg = $messages[0];
         };
@@ -1495,7 +1234,6 @@ sub ServiceMode
         if ($@)
         {
             $logger->fatal("Error : RX :(" . $@->{error} ." : ". $@->{message} );
-            #return -1; 
         };
         
         if($msg)
@@ -1503,13 +1241,10 @@ sub ServiceMode
             if ($msg->error_code == TRX_MESSAGE_OK)
             {
                 print("\n");
-
-                #$trx->deactive_state();
-                # Trame reçue
+                # Frame Received
                 TreatMessage($trx, $msg);
                 usleep(1000);
                 $logger->info("***************************************\n");
-                #alarm (5.6);
             }
         }
         else 
@@ -1545,6 +1280,8 @@ sub FrameMode
     $logger->trace("Opr       : $Opr" );
     
     my $cmd = $gApp[APP_COMMAND];
+    my $admin = $gApp[GEN_ADMIN];
+    
     my $trm2; 
     
     if ( $device_id eq '' )
@@ -1555,138 +1292,65 @@ sub FrameMode
     
     # Get available command and key files
     my $device = $device_id;
-    my $target = uc "./".$device;
-
     my ($id_fabricant, $id_ddc) = unpack ("A4 A12", $device);
-   
+
+    $cmd->id_fabricant(sprintf("%04x", hex($id_fabricant)) );
+    $cmd->id_ddc( $id_ddc );
+    
     $cmd->_update_wize_rev($wize_rev);
     $cmd->Opr($Opr);
     $cmd->keysel($keysel);
-    
-    #$cmd->id_fabricant(sprintf("%04x", $cmd->_reverse_endian(hex($id_fabricant))));
-    $cmd->id_fabricant(sprintf("%04x", hex($id_fabricant)) );
-    #$cmd->id_ddc( $cmd->reverse_afield( $id_ddc ) );
-    $cmd->id_ddc( $id_ddc );
-    
     #$cmd->version($version);
     #$cmd->wts($wts);
     #$cmd->set_cpt( hex(0000) );
     $cmd->kmac( $cmd->get_kmac( $Opr ) );
-
     
     $logger->trace("id_fabricant : ".$cmd->id_fabricant() );
-    $logger->trace("id_ddc       : ".$cmd->id_ddc() );
-    #$logger->trace("wize_rev     : $cmd->id_fabricant" );
-    #$logger->trace("keysel       : $cmd->id_fabricant" );
-    #$logger->trace("Opr          : $cmd->id_fabricant" );
+    $logger->trace("id_ddc       : ".$cmd->id_ddc() );    
     
+    
+    #-------------------------------------------
     # Try to find the dedicated key file
-    $logger->trace ("Searching in " .$target ." for available keys");
-    my $keyFile = $target."/key.cfg";    
+    my $config = $admin->GetCfgFromFile($device, "key.cfg");
+    if ( not defined $config)
+    {
+        return (undef); 
+    }
 
-    # Check if key file exist
-    if (-e $keyFile and -f $keyFile) 
-    {
-        $logger->trace("$keyFile file found!");
-        
-        # Load the key file
-        my $config;
-        eval { 
-            $config = Config::Tiny->read($keyFile); 
-        };
-        if ($@) {
-            confess(qq|[Error in $keyFile file]\n $@|);
-            return (undef);
-        }
-        $cmd->_load_kenc( $config );
-        # $cmd->kenc( $cmd->get_kenc( $keysel ) );
-    }
-    else 
-    {
-        $logger->debug("Device $device is unknown");
-        $logger->trace("None");
-        return (undef);
-    }
+    $cmd->_load_kenc( $config );
+    
+    #-------------------------------------------
+    # Get available command, if any
+    my ($datas, $complements) = $admin->GenADM($cmd);
     
     # Try to find the dedicated admin file
-    $logger->trace ("Searching in " .$target ." for available commands");
-    my $adminFile = $target."/admin.cfg";
-    
-    my ($datas, $complements);
-    # Check if command file exist
-    if (-e $adminFile and -f $adminFile) 
+    #-------------------------------------------
+    # Check if command available
+    if ( defined $datas && defined $complements)
     {
-        $logger->trace("$adminFile file found!");
-        
-        # Load the admin file
-        my $config;
-        eval { 
-            $config = Config::Tiny->read($adminFile); 
-        };
-        if ($@) {
-            confess(qq|[Error in $adminFile file]\n $@|);
-            return (undef);
-        }
+        my $trm7;
+        # Build frame
+        $trm7 = $cmd->build_message($datas->{action}, $datas->{parameters}, $complements);
+        $cmd->build($trm7);
+        $trm2 = $cmd->message_hexa();
 
-        # Get data required to build the frame
-        my $infoIn;
-        $infoIn->{app} = $cmd;
-        $infoIn->{config} = $config;
-        
-        #$infoIn->{action} = $action;
-        #$infoIn->{desc} = $pack_desc_file;
-        
-        if ($config->{DDC}->{desc_file})
+        # check if CMD was correctly build and if was an ANN_DOWNLOAD
+        if ( $datas->{action} ) 
         {
-            my $pack_desc_file;
-            $pack_desc_file = $config->{DDC}->{desc_file};
+            if ( $datas->{action} ne 'COMMAND_ANNDOWNLOAD' )
+            {
+                $complements->{L7ChannelId} = $cmd->RF_DOWNSTREAM_CHANNEL; 
+                $complements->{L7ModulationId} = $cmd->RF_DOWNSTREAM_MOD;
+            }
+
+            $complements->{action} = $datas->{action};
+            $complements->{device_id} = $device_id;
+            $complements->{wize_rev} = $wize_rev;
+            $complements->{keysel} = $keysel;
+            $complements->{Opr} = $Opr;
+            $complements->{L2Frm} = $trm2;
             
-            $infoIn->{desc} = "./".$device."/".$pack_desc_file;
-        }
-
-        ($datas, $complements) = genADMIN($infoIn);
-        if ( defined $datas && defined $complements)
-        {
-            my $trm7;
-            $trm7 = $cmd->build_message($datas->{action}, $datas->{parameters}, $complements);
-            $cmd->build($trm7);
-            $trm2 = $cmd->message_hexa();
-
-            # check if CMD was correctly build and if was an ANN_DOWNLOAD
-            if ( $datas->{action} ) 
-            {
-                if ( $datas->{action} eq 'COMMAND_ANNDOWNLOAD' )
-                {
-                    # Check if bin file is declared
-                    if ( $config->{DDC}->{bin_file} )
-                    {
-                        $complements->{binFile} = "./".$device."/".$config->{DDC}->{bin_file};
-                        $logger->debug("binFile : ".$complements->{binFile});
-                    }
-                    else 
-                    {
-                        $logger->warn("ANNDOWN request without \"bin_file\"");
-                    }
-                }
-                else 
-                {
-                    $complements->{L7ChannelId} = $cmd->RF_DOWNSTREAM_CHANNEL; 
-                    $complements->{L7ModulationId} = $cmd->RF_DOWNSTREAM_MOD;
-                }
-    
-                $complements->{action} = $datas->{action};
-                $complements->{device_id} = $device_id;
-                $complements->{wize_rev} = $wize_rev;
-                $complements->{keysel} = $keysel;
-                $complements->{Opr} = $Opr;
-                $complements->{L2Frm} = $trm2;
-                
-                $logger->debug("FRM L2 : $trm2");
-            }
-            else 
-            {
-                return (undef);
-            }
+            $logger->debug("FRM L2 : $trm2");
         }
         else 
         {
@@ -1695,8 +1359,7 @@ sub FrameMode
     }
     else 
     {
-        $logger->debug("Device $device is unknown");
-        $logger->trace("None");
+        return (undef);
     }
 
     return ($complements);
@@ -1972,10 +1635,17 @@ sub FreeMode
                         $trx->deactive_state();
                         # Trame reçue
                         $l7rssi = sprintf("%.1f", -0.5*$msg->RSSI);
-                        ($fake, $frame) = unpack("A2 A*", $msg->message);
-                        
                         print("\n");
-                        print("[$date_time] [ $l7rssi dBm  ] [".$trx->rx_channel()."] [RX] ". $frame . " [$delta]");
+                        
+                        if ( $trx->raw_mode == 'ON' )
+                        {
+                            ($fake, $frame) = unpack("A2 A*", $msg->message);
+                            print("[$date_time] [ $l7rssi dBm  ] [".$trx->rx_channel()."] [RX] " . $frame . " [$delta]");
+                        }
+                        else
+                        {
+                            print("[$date_time] [ $l7rssi dBm  ] [".$trx->rx_channel()."] [RX] " . $msg->message . " [$delta]");
+                        }
                         print("\n");
                         usleep(100);
                         #print("***************************************\n");
@@ -2031,6 +1701,11 @@ sub SetLogLevel
         foreach my $app (instping, instpong, command, data, response, download )
         {
             $log = Log::Log4perl::get_logger("application.$app");
+            $log->more_logging($xVerbose); # inc logging level
+        }
+        foreach my $app (admin )
+        {
+            $log = Log::Log4perl::get_logger("extend.$app");
             $log->more_logging($xVerbose); # inc logging level
         }
     }
@@ -2232,6 +1907,9 @@ sub Main
         $gApp[APP_DOWNLOAD] = Telereleve::Application::Download->new(
             testname=>$app_name, mainconfig_file => $maincfg,
             check_params => 1, format =>"download");
+            
+        $gApp[GEN_ADMIN] = Telereleve::Extend::Admin->new(
+            logger_config_file => "./log.cfg");
     }
     # Set the Logger level
     SetLogLevel($verbose, $xverbose);

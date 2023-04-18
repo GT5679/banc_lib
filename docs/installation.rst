@@ -65,13 +65,14 @@ Under Ubuntu or Debian :
             liblog-dispatch-filerotate-perl \
             libdatetime-perl \
             libxml-libxml-perl \
+            libxml-compile-perl \
             libffi-platypus-perl \
-            libdata-peek-perl
+            libdata-peek-perl \
+            libdatetime-format-natural-perl
     sudo cpanm \
             Package::Alias \
-            Digest::CMAC
-
-
+            Digest::CMAC \
+            Math::Utils
 
 With docker
 ^^^^^^^^^^^

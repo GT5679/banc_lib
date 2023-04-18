@@ -28,13 +28,16 @@ RUN echo "Installing basic stuff" \
         liblog-dispatch-filerotate-perl \
         libdatetime-perl \
         libxml-libxml-perl \
+        libxml-compile-perl \
         libffi-platypus-perl \
         libdata-peek-perl \
+        libdatetime-format-natural-perl \
     && echo "Installing all required Perl things" \
     && cpanm \   
         Package::Alias \
-        Digest::CMAC
+        Digest::CMAC \
+        Math::Utils
 
 USER user
 WORKDIR /home/user/tools
-
+          

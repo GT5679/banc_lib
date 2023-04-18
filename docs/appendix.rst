@@ -15,7 +15,7 @@ Let say that our  *Sensor ID*  is :  *SET123456780100*
 
 It is composed by : SET 12345678  **01**   *00*
 
- - SET : Manufacturer Code (that is translated to manufacturer ID : 0xB44C)
+ - SET : Manufacturer Code (that is translated to manufacturer ID : 0x4CB4)
  - 12345678 : Device number
  - **01**  : Device Version
  - *00*  : Device Type
@@ -29,10 +29,10 @@ At Wize protocol level, this Sensor ID is transformed as M-Field and A-Field :
 
 But **warning** to the Little-Endian / Big-Endian conversion :
   
-- M-Field (2 bytes) : is the Manufacturer code in "little-endian" => 0x4CB4
+- M-Field (2 bytes) : is the Manufacturer code in "little-endian" => 0xB44C
 - A-Field (6 bytes) : partly little-endian => 78563412 **01** *00*
 
-**That give us**  : *0x4CB4785634120100*
+**That give us**  : *0xB44C785634120100*
 
 .. *****************************************************************************
 .. references

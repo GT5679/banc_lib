@@ -2106,7 +2106,7 @@ sub receive {
         
         $tick_count = $self->_get_tick_count();
         $timeout = $tick_count + $self->timeout();
-        
+        $in = 0;
         while( ($in == 0) && ($tick_count < $timeout)) {
             usleep(5000);
             ($blk, $in, $out, $err) = $self->conn()->status;
