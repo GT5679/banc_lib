@@ -109,9 +109,9 @@ sub GenADM
     if ($config->{DDC}->{desc_file})
     {
         my $pack_desc_file;
+        $target = uc "./".$device;
         $pack_desc_file = $config->{DDC}->{desc_file};
-        
-        $infoIn->{desc} = "./".$device."/".$pack_desc_file;
+        $infoIn->{desc} = "./".$target."/".$pack_desc_file;
     }
     
     #-----------------------------------------------------------------------
@@ -124,7 +124,7 @@ sub GenADM
         # check if CMD was correctly build and if was an ANN_DOWNLOAD
         if ( $datas->{action} && ( $datas->{action} eq 'COMMAND_ANNDOWNLOAD') ) 
         {
-            # Check if bin file is decmared
+            # Check if bin file is declared
             if ( $config->{DDC}->{bin_file} )
             {
                 $complements->{binFile} = "./".$device."/".$config->{DDC}->{bin_file};

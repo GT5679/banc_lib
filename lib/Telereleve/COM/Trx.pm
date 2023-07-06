@@ -2057,7 +2057,8 @@ sub send {
     {
       my $msg = join "" , map { pack( 'C', $_ ) } @$message;
       eval {
-        my $cnt_out = $self->conn()->write($msg);
+        my $cnt_out = 0;
+        $cnt_out = $self->conn()->write($msg);
         if ($cnt_out != length($msg))
         {
             warn "write incomplete\n";

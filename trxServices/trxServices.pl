@@ -1395,10 +1395,11 @@ sub FreeMode_Menu {
     # sudo apt-get install libreadline7 or libreadline6
     # sudo apt-get install readline-common
     
-    # sudo apt-get install libterm-readline-gnu-perl
+    # required : sudo apt-get install libterm-readline-gnu-perl
     # sudo apt-get install libterm-ui-perl
     
     my $term = Term::ReadLine->new("Simple Shell");
+    $term->ornaments(0); 
     
     # cmd : 
     #  TX channel modulation repeat [frame]
@@ -1407,6 +1408,8 @@ sub FreeMode_Menu {
     print("Listen : RX channel modulation window (window in second) \n");
     print("Quit   : q \n");
     $input = $term->readline("\$> : ");
+    
+    $term->addhistory($input) if /\S/;
     
     @command = split(' ', $input);
     
@@ -1446,15 +1449,15 @@ sub FreeMode_Menu {
         return (0, $cmd, $Channel, $Mod, $repeat, $message);
     }
     
-    if( $repeat > 100 ) 
+    if( $repeat > 999 ) 
     { 
         if($cmd == TX)
         {
-            print("Repeat is limited to 100\n"); 
+            print("Repeat is limited to 999\n"); 
         }
         if($cmd == RX)
         {
-            print("Listening window is limited to 100 second\n"); 
+            print("Listening window is limited to 999 second\n"); 
         }
         return (0, $cmd, $Channel, $Mod, $repeat, $message);
     }    
