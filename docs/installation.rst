@@ -6,7 +6,7 @@ Installation
 Repository organization
 =======================
 
-This repository is organize as follow : 
+This repository is organized as follows : 
 
 .. code-block:: bash 
 
