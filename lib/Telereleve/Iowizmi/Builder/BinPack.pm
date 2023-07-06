@@ -62,7 +62,8 @@ sub _build {
     #***************************************************************************
     $self->logger->debug("Get info from bin file");
     my $ManufacturerID;
-    my $HashSw;
+    my $HashSw = 0;
+    my $hash_sw = 0;
     my $BinSize;
     my $nbBlock;
     my $temp = 0;
@@ -75,9 +76,8 @@ sub _build {
     $ManufacturerID = sprintf("%hx", $temp);
 
     # Get Hash from file
-    my $sha = Digest::SHA->new(256);
-    $HashSw = $sha->digest;
-    $HashSw = $sha->hexdigest;
+    my $sha = Digest::SHA->new(256);   
+    $sha->addfile($BinFileName);
     
     # Get file size then deduce the number of block
     $BinSize = (stat $BinFileName)[7];
@@ -88,13 +88,31 @@ sub _build {
     {
         $nPadding = 210 - $rest;
         $nbBlock += 1;
-    }
+        
+        my $pad_str = "";
+        for (my $j=0; $j < $nPadding; $j++)
+        {
+            $pad_str = $pad_str . pack ("H2", "FF");
+        }
+        $sha->add($pad_str);
+    } 
+    
+    
+    # this doesn't work
+    # $HashSw = $sha->hexdigest;
+
+    # Without padding : 04f34bfe8c87ec79f9db3b494ae3afcde2d185983476c2a8efa54b593751d972  IowizmiTest/OpenWize-Up/bootstrap.bin
+    # With padding : bf8c9d20c214477eff449be108067bf8ae6e7bc6f7754419d8c1654c5bc66f6b  ./IowizmiTest/OpenWize-Up/bootstrap_tmp.bin
+    # this one work
+    $hash_sw = $sha->hexdigest;
     
     $self->logger->trace("\t Manuf ID : $ManufacturerID");
-    $self->logger->trace("\t HashSw   : $HashSw");
+    $self->logger->trace("\t BinSize  : $BinSize");
     $self->logger->trace("\t Block    : $nbBlock");
     $self->logger->trace("\t Padding  : $nPadding");
-    
+    #$self->logger->trace("\t HashSw   : $HashSw");
+    $self->logger->trace("\t HashSw   : $hash_sw");
+   
     #***************************************************************************
     if ( $Tool eq 'BINARY')
     {
@@ -135,7 +153,7 @@ sub _build {
         my ($maj, $min);
         $data->{ManufacturerID} = pack("H*", $ManufacturerID);
         
-        $HashSw = substr($HashSw, 0, 8);
+        $HashSw = substr($hash_sw, 0, 8);
         $data->{HashSw} = pack("H*", $HashSw);
 
         for ( my $i=0; $i< scalar @HwVersion; $i++)
@@ -207,7 +225,7 @@ sub _build {
         $data->{versionRefTechnique} = $RefTechVer;
         $data->{nbBlocs} = $nbBlock;
         
-        $HashSw = substr($HashSw, 0, 8);
+        $HashSw = substr($hash_sw, 0, 8);
         $data->{motifIntegriteLogiciel} = pack("H*", $HashSw);
 
         $data->{type} = $Type;

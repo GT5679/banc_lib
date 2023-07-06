@@ -2057,7 +2057,8 @@ sub send {
     {
       my $msg = join "" , map { pack( 'C', $_ ) } @$message;
       eval {
-        my $cnt_out = $self->conn()->write($msg);
+        my $cnt_out = 0;
+        $cnt_out = $self->conn()->write($msg);
         if ($cnt_out != length($msg))
         {
             warn "write incomplete\n";
@@ -2106,7 +2107,7 @@ sub receive {
         
         $tick_count = $self->_get_tick_count();
         $timeout = $tick_count + $self->timeout();
-        
+        $in = 0;
         while( ($in == 0) && ($tick_count < $timeout)) {
             usleep(5000);
             ($blk, $in, $out, $err) = $self->conn()->status;

@@ -956,7 +956,6 @@ sub _crypte_exchange {
     if ($self->application() =~ m/INSTPONG/)
     {
         #ajout de epoch et de tx_freq_offset  à la trame
-=pod
         if ( ! defined $self->epoch() ) 
         {
             $self->epoch(time() - timelocal(0,0,0,1,0,2013));
@@ -968,9 +967,7 @@ sub _crypte_exchange {
                 $self->epoch(time() - timelocal(0,0,0,1,0,2013));
             }
         }
-=cut
-        $self->epoch(time() - timelocal(0,0,0,1,0,2013));
-        
+
         $self->logger->trace("[EPOCH] ".$self->epoch() );
         $plaintext .=      pack("H8 H4", $self->epoch(), $self->tx_freq_offset() );
     }
@@ -1143,10 +1140,9 @@ sub _crypte_download {
     
     
     $self->logger->debug("[cipher] klog used : " . $self->kenc() ); 
-    
     my $message_aes = $self->kenc() =~ m/^00000+$/ ?
-                                $message :
-                                $self->_get_aes_ctr_string_ciphseq($message);
+                               $message :
+                               $self->_get_aes_ctr_string_ciphseq($message);
     $self->logger->debug("[cipher] after ciphering : [$message_aes]");
     
     $self->_get_total_length($message_aes);

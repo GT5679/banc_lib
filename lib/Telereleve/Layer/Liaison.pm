@@ -601,6 +601,10 @@ sub _decompose_exchange {
         $self->BADCRC(1);
         #confess({error => 0x22, message => "CRC computed is not same as the one in frame : $crc_str_hexa != ". $self->CRC() }) ;
     }
+    else
+    {
+        $self->BADCRC(0);
+    }
     $self->set_liaison_response( 
                         'C-field' => $self->cfield , 
                         'L-field' => $length,
