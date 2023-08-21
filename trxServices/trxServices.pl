@@ -1,6 +1,6 @@
 ##!/usr/bin/perl
 
-my $CurVersion = "1.5.0"; # git describe --tag
+my $CurVersion = "1.5.1"; # git describe --tag
 my $CurCommit = '$Id$'; # git rev-parse --short HEAD
 my $CurSupport = "support\@grdf.fr";
 
@@ -1380,6 +1380,7 @@ use constant {
 
 my @channel_list = (100, 110, 120, 130, 140, 150 );
 my @modulation_list = (0, 1, 2);
+my $format=0;
 
 =head2 FreeMode_Menu
 
@@ -1399,17 +1400,15 @@ sub FreeMode_Menu {
     # sudo apt-get install libterm-ui-perl
     
     my $term = Term::ReadLine->new("Simple Shell");
-    $term->ornaments(0); 
     
     # cmd : 
     #  TX channel modulation repeat [frame]
     #  RX channel modulation window
     print("Send   : TX channel modulation repeat [frame] (repeat in step every second)\n");
     print("Listen : RX channel modulation window (window in second) \n");
+    print("Format : f (toggle between time (default) and epoch format)(UTC) \n");
     print("Quit   : q \n");
     $input = $term->readline("\$> : ");
-    
-    $term->addhistory($input) if /\S/;
     
     @command = split(' ', $input);
     
@@ -1423,10 +1422,18 @@ sub FreeMode_Menu {
     else                       
     { 
         $cmd = IDLE; 
-        print("Unknonw command\n");
+        if($command[0] eq "f" )
+        { 
+            if ($format == 1) { $format = 0; print("set time format\n"); }
+            else              { $format = 1; print("set epoch format\n"); }
+        }
+        else
+        {
+            print("Unknonw command\n");
+        }
         return (0, $cmd, $Channel, $Mod, $repeat, $message);
-    }    
-
+    }
+    
     if(scalar @command < 4)
     {
         print("Missing parameter\n");
@@ -1568,7 +1575,14 @@ sub FreeMode
                 
                 ($sec,$min,$hour) = localtime(time);
                 ($s_sec, $usec) = gettimeofday;
-                $date_time = sprintf("%02d:%02d:%02d:%03d", $hour, $min, $sec, $usec);
+                if ($format)
+                {
+                    $date_time = sprintf("%d,%03d", $s_sec, $usec);
+                }
+                else
+                {
+                    $date_time = sprintf("%02d:%02d:%02d:%03d", $hour, $min, $sec, $usec);
+                }
             
                 print("$repeat [$date_time] [ -xx.x dBm  ] [".$trx->tx_channel()."] [TX] ". $temp);               
                 print("\n");
@@ -1632,8 +1646,14 @@ sub FreeMode
                         
                         ($sec,$min,$hour) = localtime(time);
                         ($s_sec, $usec) = gettimeofday;
-                        $date_time = sprintf("%02d:%02d:%02d,%03d", $hour, $min, $sec, $usec);
-                        
+                        if ($format)
+                        {
+                            $date_time = sprintf("%d,%03d", $s_sec, $usec);
+                        }
+                        else
+                        {
+                            $date_time = sprintf("%02d:%02d:%02d:%03d", $hour, $min, $sec, $usec);
+                        }
                         
                         $trx->deactive_state();
                         # Trame reçue

@@ -5,8 +5,11 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd );
 # ------------------------------------------------------------------------------
 source ${SCRIPT_DIR}/param_id.sh
 
-fmtStr="   # Set %-22s : %-5d 0x%-5x\n"
+fmtStr="   # Set %-22s (0x%02x) : %-5d 0x%-5x\n"
 fmtStrArray="   # Set %-22s : %s\n"
+
+HAS_ATKEY_CMD=1;
+HAS_ATZn_CMD=1;
 
 # ------------------------------------------------------------------------------
 # Send AT keys in aVal [] table
@@ -22,11 +25,17 @@ function _setup_keys {
     for k in ${!aVal_ref[@]}
     do
         printf "$fmtStrArray" "Key "$k ${aVal_ref[$k]};
-        if [[ "$k" == "17" ]]
-        then # set kmac 
-            echo -e "ATKMAC=\$${aVal_ref[$k]}\r" > $mDev; sleep ${wtime};
-        else # set kenc
-            echo -e "ATKENC=$k,\$${aVal_ref[$k]}\r" > $mDev; sleep ${wtime};
+        if [[ ${HAS_ATKEY_CMD} == 1 ]]
+        then
+            # set key
+            echo -e "ATKEY=$k,\$${aVal_ref[$k]}\r" > $mDev; sleep ${wtime};
+        else
+            if [[ "$k" == "17" ]]
+            then # set kmac 
+                echo -e "ATKMAC=\$${aVal_ref[$k]}\r" > $mDev; sleep ${wtime};
+            else # set kenc
+                echo -e "ATKENC=$k,\$${aVal_ref[$k]}\r" > $mDev; sleep ${wtime};
+            fi        
         fi
     done
 }
@@ -44,7 +53,7 @@ function _setup_parameters {
     # ------
     for k in ${!aVal_ref[@]}
     do
-        printf "$fmtStr" $k $(( ${aVal_ref[$k]} )) $(( ${aVal_ref[$k]} ));       
+        printf "$fmtStr" $k 0x${paramsId[$k]} $(( ${aVal_ref[$k]} )) $(( ${aVal_ref[$k]} ));       
         echo -e "ATPARAM=\$${paramsId[$k]},$(( ${aVal_ref[$k]} ))\r" > $mDev; sleep ${wtime};
     done
 }
@@ -85,7 +94,7 @@ function setup_device {
     # ------
     if [[ ${elogger} == 1 ]]
     then
-        echo "Enable the Logger";       
+        echo "Enable the Logger";
     else       
         for k in ${!aLoggerVal_ref[@]}
         do
@@ -96,6 +105,19 @@ function setup_device {
     _setup_parameters "${ttyDev}" "${wtime}" aLoggerVal_ref;    
     # ------
     echo -e 'AT&W\r' > $mDev; sleep ${wtime};
-    sleep 0.1;
-    echo -e 'ATZC\r' > $mDev; sleep ${wtime};
+    # ------
+    local sleep_time=0.1;
+    
+    echo "... wait for $sleep_time";
+    sleep $sleep_time;
+    
+    echo "... reboot";
+    # ------
+    if [[ ${HAS_ATZn_CMD} == 1 ]]
+    then
+        #echo -e 'ATZ\r' > $mDev; sleep ${wtime};
+        echo -e 'ATZ0\r' > $mDev; sleep ${wtime};
+    else
+        echo -e 'ATZC\r' > $mDev; sleep ${wtime};
+    fi
 }
