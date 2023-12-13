@@ -1,6 +1,6 @@
 ##!/usr/bin/perl
 
-my $CurVersion = "1.5.1"; # git describe --tag
+my $CurVersion = "1.5.2"; # git describe --tag
 my $CurCommit = '$Id$'; # git rev-parse --short HEAD
 my $CurSupport = "support\@grdf.fr";
 
